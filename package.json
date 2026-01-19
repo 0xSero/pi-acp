@@ -1,0 +1,28 @@
+{
+  "name": "pi-acp",
+  "version": "0.1.0",
+  "description": "ACP adapter for pi --mode rpc",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "start": "node --import tsx src/index.ts",
+    "typecheck": "tsc",
+    "test": "node --import tsx scripts/smoke.ts"
+  },
+  "keywords": [
+    "acp",
+    "pi",
+    "rpc",
+    "adapter"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^0.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.9",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
