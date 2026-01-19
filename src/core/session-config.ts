@@ -185,7 +185,7 @@ function normalizeThinkingLevel(level: string | undefined, availableLevels: read
   return availableLevels.includes(level) ? level : undefined;
 }
 
-function formatThinkingLevel(level: string): string {
+export function formatThinkingLevel(level: string): string {
   if (level === "xhigh") {
     return "Extra High";
   }
