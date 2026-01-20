@@ -1,17 +1,24 @@
-import { logWarn } from "../logger";
-import { PiProcess } from "../pi/process";
-import { PiResponse } from "../pi/types";
+import { logWarn } from "../../logger";
+import { PiProcess } from "../../pi/process";
+import { PiResponse } from "../../pi/types";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
-import { SessionConfigResult, SessionState, PiModel } from "./types";
-import { THINKING_LEVELS_WITH_XHIGH, XHIGH_MODELS, THINKING_LEVELS } from "./session-consts";
+import { SessionConfigResult, SessionState, PiModel } from "../session/types";
+import { THINKING_LEVELS_WITH_XHIGH, XHIGH_MODELS, THINKING_LEVELS } from "./consts";
 
-export function createSessionState(id: string, cwd: string, pi: PiProcess): SessionState {
+export function createSessionState(
+  id: string,
+  cwd: string,
+  pi: PiProcess,
+  mcpServers?: unknown[]
+): SessionState {
   return {
     id,
     cwd,
     pi,
     toolCallSnapshots: new Map(),
+    toolCallInputs: new Map(),
     modelMap: new Map(),
+    mcpServers,
   };
 }
 

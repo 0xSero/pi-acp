@@ -11,6 +11,15 @@ export const XHIGH_MODELS = new Set(["gpt-5.1-codex-max", "gpt-5.2", "gpt-5.2-co
 
 export const DEFAULT_COMMANDS = [
   {
+    name: "sessions",
+    description: "Show last 20 sessions",
+  },
+  {
+    name: "load",
+    description: "Load a session by number",
+    input: { hint: "<number>" },
+  },
+  {
     name: "compact",
     description: "Compact conversation",
     input: { hint: "optional instructions" },
@@ -52,4 +61,14 @@ export const DEFAULT_COMMANDS = [
     input: { hint: "entryId (optional)" },
   },
   { name: "new", description: "Start a fresh session" },
+  {
+    name: "fetch",
+    description: "Fetch a URL",
+    input: { hint: "https://example.com" },
+  },
+  {
+    name: "search",
+    description: "Search the web",
+    input: { hint: "search query" },
+  },
 ];

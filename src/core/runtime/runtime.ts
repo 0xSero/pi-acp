@@ -1,9 +1,10 @@
-import { logWarn } from "../logger";
-import { PiEvent, PiResponse } from "../pi/types";
+import { logWarn } from "../../logger";
+import { PiEvent, PiResponse } from "../../pi/types";
 import type { ContentBlock, SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
-import type { SessionState } from "./types";
-import { SessionCommandHandler } from "./session-commands";
-import { SessionToolHandler } from "./session-tools";
+import type { SessionState } from "../session/types";
+import { SessionCommandHandler } from "../commands/handler";
+import { SessionToolHandler } from "../tools/session-tools";
+import { SessionStatsReporter } from "./stats";
 
 const STOP_REASON_MAP: Record<string, StopReason> = {
   stop: "end_turn",
@@ -12,15 +13,19 @@ const STOP_REASON_MAP: Record<string, StopReason> = {
   toolUse: "end_turn",
 };
 
+const HISTORY_LOAD_TIMEOUT_MS = 30000;
+
 export class SessionRuntime {
   private readonly emitUpdate: (sessionId: string, update: SessionUpdate) => void;
   private readonly commands: SessionCommandHandler;
   private readonly tools: SessionToolHandler;
+  private readonly stats: SessionStatsReporter;
 
   constructor(options: { emitUpdate: (sessionId: string, update: SessionUpdate) => void }) {
     this.emitUpdate = options.emitUpdate;
     this.commands = new SessionCommandHandler(this.emitUpdate);
     this.tools = new SessionToolHandler(this.emitUpdate);
+    this.stats = new SessionStatsReporter(this.emitUpdate);
   }
 
   handlePiLine(session: SessionState, line: PiEvent | PiResponse): void {
@@ -100,7 +105,13 @@ export class SessionRuntime {
   }
 
   async replayHistory(session: SessionState): Promise<void> {
-    const response = await session.pi.request({ type: "get_messages" });
+    let response: PiResponse;
+    try {
+      response = await session.pi.request({ type: "get_messages" }, HISTORY_LOAD_TIMEOUT_MS);
+    } catch (error) {
+      logWarn(`history replay failed for ${session.id}: ${(error as Error).message}`);
+      return;
+    }
     if (!response.success || !response.data || typeof response.data !== "object") {
       return;
     }
@@ -149,11 +160,11 @@ export class SessionRuntime {
   }
 
   private handleTurnEnd(session: SessionState, event: Extract<PiEvent, { type: "turn_end" }>): void {
-    if (!session.pendingPrompt) {
-      return;
-    }
     const stopReason = this.mapStopReason((event.message as { stopReason?: string } | undefined)?.stopReason);
-    this.resolvePendingPrompt(session, stopReason);
+    if (session.pendingPrompt) {
+      this.resolvePendingPrompt(session, stopReason);
+    }
+    void this.stats.report(session);
   }
 
   private resolvePendingPrompt(session: SessionState, stopReason: StopReason): void {

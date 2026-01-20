@@ -17,12 +17,15 @@ import {
   type SetSessionConfigOptionResponse,
   type SetSessionModelRequest,
   type SetSessionModelResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type ListSessionsRequest,
   type ListSessionsResponse,
   type ResumeSessionRequest,
   type ResumeSessionResponse,
 } from "@agentclientprotocol/sdk";
-import { SessionManager } from "../core/session-manager";
+import { SessionManager } from "../core/session/manager";
+import { logInfo } from "../logger";
 
 export class AcpAgent implements Agent {
   private readonly connection: AgentSideConnection;
@@ -31,10 +34,22 @@ export class AcpAgent implements Agent {
   constructor(connection: AgentSideConnection, sessionManager: SessionManager) {
     this.connection = connection;
     this.sessionManager = sessionManager;
-    this.sessionManager.setEmitter((params) => void this.connection.sessionUpdate(params));
+    this.sessionManager.setEmitter((params) => {
+      if (params.update.sessionUpdate === "session_info_update") {
+        const { title, updatedAt } = params.update;
+        logInfo(
+          `session_info_update id=${params.sessionId} title=${title ?? ""} updatedAt=${updatedAt ?? ""}`
+        );
+      }
+      if (params.update.sessionUpdate === "available_commands_update") {
+        logInfo(`available_commands_update id=${params.sessionId}`);
+      }
+      void this.connection.sessionUpdate(params);
+    });
   }
 
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
+    logInfo("initialize");
     return {
       protocolVersion: params.protocolVersion ?? PROTOCOL_VERSION,
       agentCapabilities: {
@@ -44,15 +59,16 @@ export class AcpAgent implements Agent {
           audio: false,
           embeddedContext: true,
         },
-        mcpCapabilities: { http: false, sse: false },
+        mcpCapabilities: { http: true, sse: true },
         sessionCapabilities: {
           list: {},
           resume: {},
+          fork: {},
         },
       },
       agentInfo: {
-        name: "pi-acp",
-        title: "Pi ACP",
+        name: "pi-rpc-acp",
+        title: "Pi RPC ACP",
         version: "0.1.0",
         _meta: {
           icon: "@pi-rpc-acp-adapter/logo.svg",
@@ -70,6 +86,7 @@ export class AcpAgent implements Agent {
     if (!params?.cwd) {
       throw new Error("Missing required param: cwd");
     }
+    logInfo(`session/new cwd=${params.cwd}`);
     const { sessionId, models, configOptions } = await this.sessionManager.createSession(
       params.cwd,
       params.mcpServers ?? []
@@ -78,7 +95,7 @@ export class AcpAgent implements Agent {
       sessionId,
       modes: null,
       models,
-      configOptions,
+      configOptions: configOptions ?? [],
     };
   }
 
@@ -86,11 +103,17 @@ export class AcpAgent implements Agent {
     if (!params?.sessionId || !params?.cwd) {
       throw new Error("Missing required params: sessionId, cwd");
     }
-    const { models, configOptions } = await this.sessionManager.loadSession(params.sessionId, params.cwd);
-    return { modes: null, models, configOptions };
+    logInfo(`session/load id=${params.sessionId} cwd=${params.cwd}`);
+    const { models, configOptions } = await this.sessionManager.loadSession(
+      params.sessionId,
+      params.cwd,
+      params.mcpServers ?? []
+    );
+    return { modes: null, models, configOptions: configOptions ?? [] };
   }
 
   async prompt(params: PromptRequest): Promise<PromptResponse> {
+    logInfo(`session/prompt id=${params.sessionId} blocks=${params.prompt?.length ?? 0}`);
     const stopReason = await this.sessionManager.prompt(params.sessionId, params.prompt);
     return { stopReason };
   }
@@ -110,21 +133,35 @@ export class AcpAgent implements Agent {
     return await this.sessionManager.setConfigOption(params);
   }
 
-  async unstable_listSessions(_params: ListSessionsRequest): Promise<ListSessionsResponse> {
-    const sessions = this.sessionManager.listSessions();
-    return {
-      sessions: sessions.map((session) => ({
-        sessionId: session.sessionId,
-        cwd: session.cwd,
-      })),
-    };
+  async unstable_listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
+    logInfo("session/list");
+    const sessions = await this.sessionManager.listSessions(params);
+    return { sessions };
+  }
+
+  async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
+    if (!params?.sessionId || !params?.cwd) {
+      throw new Error("Missing required params: sessionId, cwd");
+    }
+    logInfo(`session/fork source=${params.sessionId} cwd=${params.cwd}`);
+    const { sessionId, models, configOptions } = await this.sessionManager.forkSession(
+      params.sessionId,
+      params.cwd,
+      params.mcpServers ?? []
+    );
+    return { sessionId, modes: null, models, configOptions: configOptions ?? [] };
   }
 
   async unstable_resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
     if (!params?.sessionId || !params?.cwd) {
       throw new Error("Missing required params: sessionId, cwd");
     }
-    const { models, configOptions } = await this.sessionManager.resumeSession(params.sessionId, params.cwd);
-    return { modes: null, models, configOptions };
+    logInfo(`session/resume id=${params.sessionId} cwd=${params.cwd}`);
+    const { models, configOptions } = await this.sessionManager.resumeSession(
+      params.sessionId,
+      params.cwd,
+      params.mcpServers ?? []
+    );
+    return { modes: null, models, configOptions: configOptions ?? [] };
   }
 }

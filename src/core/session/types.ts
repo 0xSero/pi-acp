@@ -1,5 +1,5 @@
 import type { SessionConfigOption, SessionModelState, StopReason } from "@agentclientprotocol/sdk";
-import type { PiProcess } from "../pi/process";
+import type { PiProcess } from "../../pi/process";
 
 export interface PendingPrompt {
   resolve: (reason: StopReason) => void;
@@ -12,6 +12,8 @@ export interface PiModel {
   provider: string;
   reasoning?: boolean;
   api?: string;
+  contextWindow?: number;
+  maxTokens?: number;
 }
 
 export interface SessionState {
@@ -19,7 +21,9 @@ export interface SessionState {
   cwd: string;
   pi: PiProcess;
   pendingPrompt?: PendingPrompt;
+  sessionFile?: string;
   toolCallSnapshots: Map<string, { path: string; oldText: string }>;
+  toolCallInputs: Map<string, { summary: string; locations?: string[] }>;
   modelMap: Map<string, PiModel>;
   currentModelId?: string;
   thinkingLevel?: string;
@@ -28,6 +32,8 @@ export interface SessionState {
   autoCompactionEnabled?: boolean;
   autoRetryEnabled?: boolean;
   configOptions?: SessionConfigOption[];
+  mcpServers?: unknown[];
+  title?: string;
 }
 
 export type SessionConfigResult = {

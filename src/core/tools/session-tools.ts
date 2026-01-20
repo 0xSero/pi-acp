@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { logWarn } from "../logger";
+import { logWarn } from "../../logger";
 import type { SessionUpdate, ToolCallContent, ToolKind } from "@agentclientprotocol/sdk";
-import type { PiEvent } from "../pi/types";
-import type { SessionState } from "./types";
+import type { PiEvent } from "../../pi/types";
+import type { SessionState } from "../session/types";
 
 type EmitUpdate = (sessionId: string, update: SessionUpdate) => void;
 
@@ -19,6 +19,10 @@ export class SessionToolHandler {
   }
 
   async handleStart(session: SessionState, event: ToolStartEvent): Promise<void> {
+    const inputSummary = this.formatToolInput(event.toolName, event.args);
+    const locations = this.extractLocations(event.args);
+    session.toolCallInputs.set(event.toolCallId, { summary: inputSummary, locations });
+
     this.emitUpdate(session.id, {
       sessionUpdate: "tool_call",
       toolCallId: event.toolCallId,
@@ -26,6 +30,10 @@ export class SessionToolHandler {
       kind: this.mapToolKind(event.toolName),
       status: "pending",
       rawInput: event.args,
+      locations: locations?.map((path) => ({ path })),
+      content: inputSummary
+        ? [{ type: "content", content: { type: "text", text: inputSummary } }]
+        : undefined,
     });
 
     const path = this.extractPathFromArgs(event.args);
@@ -35,22 +43,28 @@ export class SessionToolHandler {
   }
 
   handleUpdate(session: SessionState, event: ToolUpdateEvent): void {
+    const inputSummary = session.toolCallInputs.get(event.toolCallId)?.summary;
     const contentText = this.extractToolContent(event.partialResult);
+    const content = this.buildToolCallContent(inputSummary, contentText, undefined);
     this.emitUpdate(session.id, {
       sessionUpdate: "tool_call_update",
       toolCallId: event.toolCallId,
       status: "in_progress",
-      content: contentText ? [{ type: "content", content: { type: "text", text: contentText } }] : undefined,
+      content: content.length > 0 ? content : undefined,
     });
   }
 
   handleEnd(session: SessionState, event: ToolEndEvent): void {
+    const inputSummary = session.toolCallInputs.get(event.toolCallId)?.summary;
+    session.toolCallInputs.delete(event.toolCallId);
+
     const contentText = this.extractToolContent(event.result);
+    const detailsText = this.formatToolDetails(event.result?.details);
     const diffContent = this.buildDiffContent(session, event.toolCallId);
-    const content: ToolCallContent[] = [
-      ...(contentText ? [{ type: "content" as const, content: { type: "text" as const, text: contentText } }] : []),
-      ...(diffContent ? [diffContent] : []),
-    ];
+    const content = this.buildToolCallContent(inputSummary, contentText, detailsText);
+    if (diffContent) {
+      content.push(diffContent);
+    }
 
     this.emitUpdate(session.id, {
       sessionUpdate: "tool_call_update",
@@ -59,6 +73,42 @@ export class SessionToolHandler {
       content: content.length > 0 ? content : undefined,
       rawOutput: event.result,
     });
+  }
+
+  private buildToolCallContent(
+    inputSummary?: string,
+    outputText?: string,
+    detailsText?: string
+  ): ToolCallContent[] {
+    const parts = [inputSummary, outputText, detailsText].filter(Boolean) as string[];
+    if (parts.length === 0) {
+      return [];
+    }
+    return [{ type: "content", content: { type: "text", text: parts.join("\n\n") } }];
+  }
+
+  private formatToolInput(toolName: string, args: unknown): string {
+    if (toolName.toLowerCase() === "bash" && args && typeof args === "object") {
+      const command = (args as { command?: unknown }).command;
+      if (typeof command === "string") {
+        return `Command: ${command}`;
+      }
+    }
+    if (!args) {
+      return toolName;
+    }
+    try {
+      return `Args: ${JSON.stringify(args, null, 2)}`;
+    } catch {
+      return `Args: ${String(args)}`;
+    }
+  }
+
+  private formatToolDetails(details?: Record<string, unknown>): string | undefined {
+    if (!details || Object.keys(details).length === 0) {
+      return undefined;
+    }
+    return `Details: ${JSON.stringify(details, null, 2)}`;
   }
 
   private extractToolContent(result?: { content?: { type: "text"; text: string }[] }): string | undefined {
@@ -78,6 +128,11 @@ export class SessionToolHandler {
     const candidate = args as { path?: unknown; filePath?: unknown; file?: unknown };
     const path = [candidate.path, candidate.filePath, candidate.file].find((value) => typeof value === "string");
     return typeof path === "string" ? path : undefined;
+  }
+
+  private extractLocations(args: unknown): string[] | undefined {
+    const path = this.extractPathFromArgs(args);
+    return path ? [path] : undefined;
   }
 
   private async snapshotFile(session: SessionState, toolCallId: string, path: string): Promise<void> {
@@ -135,6 +190,9 @@ export class SessionToolHandler {
     }
     if (normalized.includes("search")) {
       return "search";
+    }
+    if (normalized.includes("fetch") || normalized.includes("http")) {
+      return "fetch";
     }
     if (normalized.includes("delete")) {
       return "delete";
