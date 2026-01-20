@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { getSessionDirForCwd, listSessionFiles } from "./paths";
+import { extractMessageText, normalizeCwd, normalizeTitle, safeJsonParse } from "./utils";
 
 export type SessionFileInfo = {
   sessionId: string;
@@ -13,57 +13,6 @@ export type SessionFileInfo = {
   messageCount: number;
   modifiedMs: number;
 };
-
-const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
-const MAX_TITLE_LENGTH = 160;
-
-export function getAgentDir(): string {
-  const envDir = process.env[AGENT_DIR_ENV];
-  if (envDir) {
-    return expandHome(envDir);
-  }
-  return path.join(os.homedir(), ".pi", "agent");
-}
-
-export function getSessionsDir(): string {
-  return path.join(getAgentDir(), "sessions");
-}
-
-export async function getSessionDirForCwd(cwd: string): Promise<string> {
-  const normalizedCwd = normalizeCwd(cwd) ?? cwd;
-  const safePath = `--${normalizedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-  const sessionDir = path.join(getSessionsDir(), safePath);
-  await mkdir(sessionDir, { recursive: true });
-  return sessionDir;
-}
-
-export async function listSessionFiles(): Promise<string[]> {
-  const sessionsDir = getSessionsDir();
-  let dirEntries: Array<import("node:fs").Dirent> = [];
-  try {
-    dirEntries = await readdir(sessionsDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const files: string[] = [];
-  const candidateDirs = dirEntries.filter((entry) => entry.isDirectory()).map((entry) => path.join(sessionsDir, entry.name));
-
-  for (const dir of candidateDirs) {
-    try {
-      const sessionEntries = await readdir(dir, { withFileTypes: true });
-      for (const entry of sessionEntries) {
-        if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-          files.push(path.join(dir, entry.name));
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return files;
-}
 
 export async function scanSessions(options?: { cwd?: string | null }): Promise<{
   sessions: SessionFileInfo[];
@@ -209,92 +158,4 @@ export async function createForkedSessionFile(
   await writeFile(filePath, `${output}\n`, "utf8");
 
   return { sessionId, filePath };
-}
-
-function extractMessageText(content: unknown): string | undefined {
-  if (typeof content === "string") {
-    const trimmed = content.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  }
-
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-
-  const parts: string[] = [];
-  for (const block of content) {
-    if (!block || typeof block !== "object") {
-      continue;
-    }
-    const type = (block as { type?: string }).type;
-    if (type !== "text") {
-      continue;
-    }
-    const text = (block as { text?: string }).text;
-    if (typeof text === "string" && text.trim().length > 0) {
-      parts.push(text.trim());
-    }
-  }
-
-  if (parts.length === 0) {
-    return undefined;
-  }
-
-  return parts.join(" ").trim();
-}
-
-function normalizeTitle(value?: string | null): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return undefined;
-  }
-  return truncateTitle(normalized, MAX_TITLE_LENGTH);
-}
-
-function truncateTitle(value: string, maxLength: number): string {
-  if (value.length <= maxLength) {
-    return value;
-  }
-  return `${value.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
-}
-
-function normalizeCwd(value?: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-  let normalized = value.trim();
-  if (!normalized) {
-    return null;
-  }
-  if (normalized.startsWith("file://")) {
-    try {
-      normalized = fileURLToPath(normalized);
-    } catch {
-      // Ignore invalid file URLs
-    }
-  }
-  normalized = path.resolve(normalized);
-  normalized = normalized.replace(/[\\/]+$/, "");
-  return normalized;
-}
-
-function safeJsonParse(line: string): unknown | null {
-  try {
-    return JSON.parse(line) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-function expandHome(input: string): string {
-  if (input === "~") {
-    return os.homedir();
-  }
-  if (input.startsWith("~/")) {
-    return path.join(os.homedir(), input.slice(2));
-  }
-  return input;
 }

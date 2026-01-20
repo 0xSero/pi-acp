@@ -13,12 +13,14 @@ import type {
   StopReason,
 } from "@agentclientprotocol/sdk";
 import { refreshSessionConfig, resolveModelId } from "../config/config";
-import { DEFAULT_COMMANDS } from "../config/consts";
 import { SessionRuntime } from "../runtime/runtime";
 import type { SessionState } from "./types";
 import { SessionMapStore } from "./map";
 import { createForkedSessionFile, readSessionInfo, scanSessions } from "./metadata";
 import { spawnSessionState } from "./spawn";
+import { buildMcpEnv, emitInitialSessionInfo, inferTitleFromPrompt, queueSessionInitUpdates, withHeartbeat } from "./updates";
+import { captureSessionFile, resolveSessionPath } from "./resolve";
+import { getConfigOptions, refreshConfigOptions, setModeOption, setThinkingLevel, setToggleOption } from "./config-actions";
 
 export class SessionManager {
   private readonly sessions = new Map<string, SessionState>();
@@ -42,7 +44,7 @@ export class SessionManager {
     const sessionId = randomUUID();
     const state = this.spawnSession(sessionId, cwd, mcpServers);
     this.sessions.set(sessionId, state);
-    await this.captureSessionFile(state);
+    await captureSessionFile(state, this.sessionMap, logWarn);
     const { models, configOptions } = await refreshSessionConfig(state);
     this.queueSessionInitUpdates(state, configOptions);
     return { sessionId, models, configOptions };
@@ -52,7 +54,7 @@ export class SessionManager {
     models: SessionModelState | null;
     configOptions: SessionConfigOption[] | null;
   }> {
-    const sessionPath = await this.resolveSessionPath(sessionId, cwd);
+    const sessionPath = await resolveSessionPath(this.sessions, this.sessionMap, sessionId);
     if (!sessionPath) {
       throw new Error(`Unknown session: ${sessionId}`);
     }
@@ -67,7 +69,7 @@ export class SessionManager {
     models: SessionModelState | null;
     configOptions: SessionConfigOption[] | null;
   }> {
-    const sessionPath = await this.resolveSessionPath(sessionId, cwd);
+    const sessionPath = await resolveSessionPath(this.sessions, this.sessionMap, sessionId);
     if (!sessionPath) {
       throw new Error(`Unknown session: ${sessionId}`);
     }
@@ -82,7 +84,7 @@ export class SessionManager {
     models: SessionModelState | null;
     configOptions: SessionConfigOption[] | null;
   }> {
-    const sourcePath = await this.resolveSessionPath(sourceSessionId, null);
+    const sourcePath = await resolveSessionPath(this.sessions, this.sessionMap, sourceSessionId);
     if (!sourcePath) {
       throw new Error(`Unknown session: ${sourceSessionId}`);
     }
@@ -106,9 +108,7 @@ export class SessionManager {
       cwd: session.cwd,
       title: session.title ?? null,
       updatedAt: session.updatedAt ?? null,
-      _meta: {
-        messageCount: session.messageCount,
-      },
+      _meta: { messageCount: session.messageCount },
     }));
   }
 
@@ -133,27 +133,11 @@ export class SessionManager {
         },
       });
     }
+    this.runtime.beginPrompt(session);
     session.pi.send({ type: "prompt", message, images: images.length > 0 ? images : undefined });
     return await new Promise((resolve, reject) => {
-      const heartbeatMs = 30000;
-      const sendHeartbeat = () => {
-        this.emitUpdate({
-          sessionId: session.id,
-          update: { sessionUpdate: "session_info_update", updatedAt: new Date().toISOString() },
-        });
-      };
-      sendHeartbeat();
-      const heartbeatId = setInterval(sendHeartbeat, heartbeatMs);
-      session.pendingPrompt = {
-        resolve: (reason) => {
-          clearInterval(heartbeatId);
-          resolve(reason);
-        },
-        reject: (error) => {
-          clearInterval(heartbeatId);
-          reject(error);
-        },
-      };
+      const wrapped = withHeartbeat(session, this.emitUpdate, resolve, reject);
+      session.pendingPrompt = { resolve: wrapped.resolve, reject: wrapped.reject };
     });
   }
 
@@ -163,6 +147,7 @@ export class SessionManager {
       return;
     }
     session.pi.send({ type: "abort" });
+    this.runtime.cancelPrompt(session);
     if (session.pendingPrompt) {
       session.pendingPrompt.resolve("cancelled");
       session.pendingPrompt = undefined;
@@ -179,7 +164,7 @@ export class SessionManager {
     if (!response.success) {
       throw new Error(response.error ?? "Failed to set model");
     }
-    await this.refreshConfigOptions(session);
+    await refreshConfigOptions(session, this.emitUpdate);
   }
 
   async setConfigOption(params: SetSessionConfigOptionRequest): Promise<{ configOptions: SessionConfigOption[] }> {
@@ -187,19 +172,19 @@ export class SessionManager {
     switch (params.configId) {
       case "thinking_level":
       case "reasoning_effort":
-        await this.setThinkingLevel(session, params.value as "off" | "minimal" | "low" | "medium" | "high" | "xhigh");
+        await setThinkingLevel(session, this.emitUpdate, params.value as "off" | "minimal" | "low" | "medium" | "high" | "xhigh");
         break;
       case "steering_mode":
-        await this.setModeOption(session, "set_steering_mode", "steering mode", params.value as "all" | "one-at-a-time");
+        await setModeOption(session, this.emitUpdate, "set_steering_mode", "steering mode", params.value as "all" | "one-at-a-time");
         break;
       case "follow_up_mode":
-        await this.setModeOption(session, "set_follow_up_mode", "follow-up mode", params.value as "all" | "one-at-a-time");
+        await setModeOption(session, this.emitUpdate, "set_follow_up_mode", "follow-up mode", params.value as "all" | "one-at-a-time");
         break;
       case "auto_compaction":
-        await this.setToggleOption(session, "set_auto_compaction", "auto compaction", params.value === "on");
+        await setToggleOption(session, this.emitUpdate, "set_auto_compaction", "auto compaction", params.value === "on");
         break;
       case "auto_retry":
-        await this.setToggleOption(session, "set_auto_retry", "auto retry", params.value === "on");
+        await setToggleOption(session, this.emitUpdate, "set_auto_retry", "auto retry", params.value === "on");
         break;
       case "model":
         await this.setModel(params.sessionId, params.value);
@@ -207,7 +192,7 @@ export class SessionManager {
       default:
         throw new Error(`Unknown config option: ${params.configId}`);
     }
-    return { configOptions: session.configOptions ?? [] };
+    return { configOptions: getConfigOptions(session) };
   }
 
   private getSession(sessionId: string): SessionState {
@@ -218,29 +203,9 @@ export class SessionManager {
     return session;
   }
 
-  private async resolveSessionPath(sessionId: string, _cwd?: string | null): Promise<string | null> {
-    const active = this.sessions.get(sessionId);
-    if (active?.sessionFile) {
-      return active.sessionFile;
-    }
-
-    const mapped = await this.sessionMap.get(sessionId);
-    if (mapped) {
-      return mapped;
-    }
-
-    const { map } = await scanSessions({ cwd: null });
-    const resolved = map.get(sessionId) ?? null;
-    const mapEntries = Object.fromEntries(map.entries());
-    if (Object.keys(mapEntries).length > 0) {
-      await this.sessionMap.merge(mapEntries);
-    }
-    return resolved;
-  }
-
   private spawnSession(sessionId: string, cwd: string, mcpServers: unknown[]): SessionState {
     const env = buildMcpEnv(mcpServers);
-    return spawnSessionState({
+    const state = spawnSessionState({
       sessionId,
       cwd,
       env,
@@ -253,6 +218,8 @@ export class SessionManager {
         }
       },
     });
+    this.runtime.initSessionStatus(state);
+    return state;
   }
 
   private async createSessionFromPath(
@@ -272,128 +239,23 @@ export class SessionManager {
     return state;
   }
 
-  private async refreshConfigOptions(session: SessionState): Promise<void> {
-    const { configOptions } = await refreshSessionConfig(session);
-    this.emitUpdate({ sessionId: session.id, update: { sessionUpdate: "config_option_update", configOptions: configOptions ?? [] } });
-  }
-
-  private queueSessionInitUpdates(session: SessionState, _configOptions: SessionConfigOption[] | null): void {
-    setTimeout(() => {
-      if (!this.sessions.has(session.id)) {
-        return;
-      }
-      this.emitUpdate({ sessionId: session.id, update: { sessionUpdate: "available_commands_update", availableCommands: DEFAULT_COMMANDS } });
-      this.emitUpdate({
-        sessionId: session.id,
-        update: {
-          sessionUpdate: "session_info_update",
-          title: session.title ?? null,
-          updatedAt: new Date().toISOString(),
-        },
-      });
-      if (session.mcpServers && session.mcpServers.length > 0) {
-        this.emitUpdate({ sessionId: session.id, update: { sessionUpdate: "session_info_update", _meta: { mcpServers: session.mcpServers } } });
-      }
-      void this.emitInitialSessionInfo(session);
-    }, 0);
-  }
-
-  private async emitInitialSessionInfo(session: SessionState): Promise<void> {
-    const sessionFile = session.sessionFile;
-    if (!sessionFile) {
-      return;
-    }
-    const info = await readSessionInfo(sessionFile);
-    if (!info) {
-      return;
-    }
-    this.emitUpdate({
-      sessionId: session.id,
-      update: {
-        sessionUpdate: "session_info_update",
-        title: info.title ?? null,
-        updatedAt: info.updatedAt ?? null,
-        _meta: {
-          messageCount: info.messageCount,
-          sessionFile: info.filePath,
-        },
-      },
+  private queueSessionInitUpdates(session: SessionState, configOptions: SessionConfigOption[] | null): void {
+    queueSessionInitUpdates({
+      sessions: this.sessions,
+      session,
+      emitUpdate: this.emitUpdate,
+      configOptions,
+      onInitialInfo: (target) => emitInitialSessionInfo(target, this.emitUpdate),
     });
   }
-
-  private async captureSessionFile(session: SessionState): Promise<void> {
-    try {
-      const response = await session.pi.request({ type: "get_state" });
-      if (!response.success || !response.data || typeof response.data !== "object") {
-        return;
-      }
-      const sessionFile = (response.data as { sessionFile?: unknown }).sessionFile;
-      if (typeof sessionFile !== "string") {
-        return;
-      }
-      session.sessionFile = sessionFile;
-      await this.sessionMap.set(session.id, sessionFile);
-    } catch (error) {
-      logWarn(`session map update failed: ${(error as Error).message}`);
-    }
-  }
-
-  private async setThinkingLevel(session: SessionState, level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): Promise<void> {
-    const response = await session.pi.request({ type: "set_thinking_level", level });
-    if (!response.success) {
-      throw new Error(response.error ?? "Failed to set thinking level");
-    }
-    await this.refreshConfigOptions(session);
-  }
-
-  private async setModeOption(
-    session: SessionState,
-    type: "set_steering_mode" | "set_follow_up_mode",
-    label: string,
-    value: "all" | "one-at-a-time"
-  ): Promise<void> {
-    const response = await session.pi.request({ type, mode: value });
-    if (!response.success) {
-      throw new Error(response.error ?? `Failed to set ${label}`);
-    }
-    await this.refreshConfigOptions(session);
-  }
-
-  private async setToggleOption(
-    session: SessionState,
-    type: "set_auto_compaction" | "set_auto_retry",
-    label: string,
-    enabled: boolean
-  ): Promise<void> {
-    const response = await session.pi.request({ type, enabled });
-    if (!response.success) {
-      throw new Error(response.error ?? `Failed to set ${label}`);
-    }
-    await this.refreshConfigOptions(session);
-  }
 }
 
-function buildMcpEnv(mcpServers: unknown[]): NodeJS.ProcessEnv | undefined {
-  return mcpServers && mcpServers.length > 0 ? { PI_ACP_MCP_SERVERS: JSON.stringify(mcpServers) } : undefined;
-}
-
-function inferTitleFromPrompt(prompt: ContentBlock[]): string | null {
-  for (const block of prompt) {
-    if (block.type === "text") {
-      const trimmed = block.text.trim();
-      if (trimmed) {
-        return trimmed.length > 160 ? `${trimmed.slice(0, 159).trim()}…` : trimmed;
-      }
-    }
-    if (block.type === "resource") {
-      const resource = block.resource;
-      if ("text" in resource) {
-        const text = resource.text?.trim();
-        if (text) {
-          return text.length > 160 ? `${text.slice(0, 159).trim()}…` : text;
-        }
-      }
-    }
+export async function ensureSessionInfo(session: SessionState): Promise<void> {
+  if (!session.sessionFile) {
+    return;
   }
-  return null;
+  const info = await readSessionInfo(session.sessionFile);
+  if (info?.title) {
+    session.title = info.title;
+  }
 }

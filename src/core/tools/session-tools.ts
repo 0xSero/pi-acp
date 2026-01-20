@@ -21,18 +21,24 @@ export class SessionToolHandler {
   async handleStart(session: SessionState, event: ToolStartEvent): Promise<void> {
     const inputSummary = this.formatToolInput(event.toolName, event.args);
     const locations = this.extractLocations(event.args);
-    session.toolCallInputs.set(event.toolCallId, { summary: inputSummary, locations });
+    session.toolCallInputs.set(event.toolCallId, {
+      summary: inputSummary.summary,
+      command: inputSummary.command,
+      locations,
+    });
+
+    const title = inputSummary.command ? `${event.toolName}: ${inputSummary.command}` : event.toolName;
 
     this.emitUpdate(session.id, {
       sessionUpdate: "tool_call",
       toolCallId: event.toolCallId,
-      title: event.toolName,
+      title,
       kind: this.mapToolKind(event.toolName),
       status: "pending",
       rawInput: event.args,
       locations: locations?.map((path) => ({ path })),
-      content: inputSummary
-        ? [{ type: "content", content: { type: "text", text: inputSummary } }]
+      content: inputSummary.summary
+        ? [{ type: "content", content: { type: "text", text: inputSummary.summary } }]
         : undefined,
     });
 
@@ -43,9 +49,9 @@ export class SessionToolHandler {
   }
 
   handleUpdate(session: SessionState, event: ToolUpdateEvent): void {
-    const inputSummary = session.toolCallInputs.get(event.toolCallId)?.summary;
+    const storedInput = session.toolCallInputs.get(event.toolCallId);
     const contentText = this.extractToolContent(event.partialResult);
-    const content = this.buildToolCallContent(inputSummary, contentText, undefined);
+    const content = this.buildToolCallContent(storedInput?.summary, contentText, undefined, storedInput?.command);
     this.emitUpdate(session.id, {
       sessionUpdate: "tool_call_update",
       toolCallId: event.toolCallId,
@@ -55,13 +61,13 @@ export class SessionToolHandler {
   }
 
   handleEnd(session: SessionState, event: ToolEndEvent): void {
-    const inputSummary = session.toolCallInputs.get(event.toolCallId)?.summary;
+    const storedInput = session.toolCallInputs.get(event.toolCallId);
     session.toolCallInputs.delete(event.toolCallId);
 
     const contentText = this.extractToolContent(event.result);
     const detailsText = this.formatToolDetails(event.result?.details);
     const diffContent = this.buildDiffContent(session, event.toolCallId);
-    const content = this.buildToolCallContent(inputSummary, contentText, detailsText);
+    const content = this.buildToolCallContent(storedInput?.summary, contentText, detailsText, storedInput?.command);
     if (diffContent) {
       content.push(diffContent);
     }
@@ -78,29 +84,41 @@ export class SessionToolHandler {
   private buildToolCallContent(
     inputSummary?: string,
     outputText?: string,
-    detailsText?: string
+    detailsText?: string,
+    command?: string
   ): ToolCallContent[] {
-    const parts = [inputSummary, outputText, detailsText].filter(Boolean) as string[];
-    if (parts.length === 0) {
+    const sections: string[] = [];
+    if (command) {
+      sections.push(`Command:\n${command}`);
+    } else if (inputSummary) {
+      sections.push(`Input:\n${inputSummary}`);
+    }
+    if (outputText) {
+      sections.push(`Output:\n${outputText}`);
+    }
+    if (detailsText) {
+      sections.push(`Details:\n${detailsText}`);
+    }
+    if (sections.length === 0) {
       return [];
     }
-    return [{ type: "content", content: { type: "text", text: parts.join("\n\n") } }];
+    return [{ type: "content", content: { type: "text", text: sections.join("\n\n") } }];
   }
 
-  private formatToolInput(toolName: string, args: unknown): string {
+  private formatToolInput(toolName: string, args: unknown): { summary?: string; command?: string } {
     if (toolName.toLowerCase() === "bash" && args && typeof args === "object") {
       const command = (args as { command?: unknown }).command;
       if (typeof command === "string") {
-        return `Command: ${command}`;
+        return { summary: `Command: ${command}`, command };
       }
     }
     if (!args) {
-      return toolName;
+      return { summary: toolName };
     }
     try {
-      return `Args: ${JSON.stringify(args, null, 2)}`;
+      return { summary: JSON.stringify(args, null, 2) };
     } catch {
-      return `Args: ${String(args)}`;
+      return { summary: String(args) };
     }
   }
 
@@ -108,7 +126,7 @@ export class SessionToolHandler {
     if (!details || Object.keys(details).length === 0) {
       return undefined;
     }
-    return `Details: ${JSON.stringify(details, null, 2)}`;
+    return JSON.stringify(details, null, 2);
   }
 
   private extractToolContent(result?: { content?: { type: "text"; text: string }[] }): string | undefined {

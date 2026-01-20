@@ -5,6 +5,7 @@ import type { SessionState } from "../session/types";
 import { SessionCommandHandler } from "../commands/handler";
 import { SessionToolHandler } from "../tools/session-tools";
 import { SessionStatsReporter } from "./stats";
+import { SessionStatusReporter } from "./status";
 
 const STOP_REASON_MAP: Record<string, StopReason> = {
   stop: "end_turn",
@@ -20,12 +21,26 @@ export class SessionRuntime {
   private readonly commands: SessionCommandHandler;
   private readonly tools: SessionToolHandler;
   private readonly stats: SessionStatsReporter;
+  private readonly status: SessionStatusReporter;
 
   constructor(options: { emitUpdate: (sessionId: string, update: SessionUpdate) => void }) {
     this.emitUpdate = options.emitUpdate;
     this.commands = new SessionCommandHandler(this.emitUpdate);
     this.tools = new SessionToolHandler(this.emitUpdate);
     this.stats = new SessionStatsReporter(this.emitUpdate);
+    this.status = new SessionStatusReporter(this.emitUpdate);
+  }
+
+  initSessionStatus(session: SessionState): void {
+    this.status.ensure(session);
+  }
+
+  beginPrompt(session: SessionState): void {
+    this.status.update(session, { state: "running", detail: "Prompt sent" });
+  }
+
+  cancelPrompt(session: SessionState): void {
+    this.status.update(session, { state: "cancelled", detail: "Prompt cancelled" });
   }
 
   handlePiLine(session: SessionState, line: PiEvent | PiResponse): void {
@@ -43,6 +58,7 @@ export class SessionRuntime {
         this.handleMessageUpdate(session, event);
         break;
       case "tool_execution_start":
+        this.status.update(session, { state: "running", detail: this.formatToolStatus(event.toolName, event.args, true) });
         void this.tools.handleStart(session, event);
         break;
       case "tool_execution_update":
@@ -50,12 +66,32 @@ export class SessionRuntime {
         break;
       case "tool_execution_end":
         this.tools.handleEnd(session, event);
+        this.status.update(session, { state: "running", detail: this.formatToolStatus(event.toolName, undefined, false) });
         break;
       case "turn_end":
         this.handleTurnEnd(session, event);
         break;
       case "agent_end":
         this.resolvePendingPrompt(session, "end_turn");
+        this.status.update(session, { state: "idle", detail: "Agent finished" });
+        break;
+      case "auto_compaction_start":
+        this.status.update(session, { state: "running", detail: `Auto compaction (${event.reason})` });
+        break;
+      case "auto_compaction_end":
+        this.status.update(session, { state: "running", detail: event.aborted ? "Auto compaction aborted" : "Auto compaction complete" });
+        break;
+      case "auto_retry_start":
+        this.status.update(session, {
+          state: "running",
+          detail: `Auto retry ${event.attempt}/${event.maxAttempts}${event.errorMessage ? `: ${event.errorMessage}` : ""}`,
+        });
+        break;
+      case "auto_retry_end":
+        this.status.update(session, {
+          state: event.success ? "running" : "error",
+          detail: event.success ? "Auto retry succeeded" : event.finalError ? `Auto retry failed: ${event.finalError}` : "Auto retry failed",
+        });
         break;
       default:
         break;
@@ -164,6 +200,7 @@ export class SessionRuntime {
     if (session.pendingPrompt) {
       this.resolvePendingPrompt(session, stopReason);
     }
+    this.status.update(session, { state: "idle", detail: `Turn finished (${stopReason})` });
     void this.stats.report(session);
   }
 
@@ -187,5 +224,16 @@ export class SessionRuntime {
 
   private mapStopReason(reason?: string): StopReason {
     return (reason ? STOP_REASON_MAP[reason] : undefined) ?? "end_turn";
+  }
+
+  private formatToolStatus(toolName: string, args: unknown, starting: boolean): string {
+    const normalized = toolName.toLowerCase();
+    if (starting && normalized === "bash" && args && typeof args === "object") {
+      const command = (args as { command?: unknown }).command;
+      if (typeof command === "string") {
+        return `Running bash: ${command}`;
+      }
+    }
+    return starting ? `Running tool: ${toolName}` : `Completed tool: ${toolName}`;
   }
 }

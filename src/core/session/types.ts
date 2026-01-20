@@ -23,7 +23,7 @@ export interface SessionState {
   pendingPrompt?: PendingPrompt;
   sessionFile?: string;
   toolCallSnapshots: Map<string, { path: string; oldText: string }>;
-  toolCallInputs: Map<string, { summary: string; locations?: string[] }>;
+  toolCallInputs: Map<string, { summary?: string; locations?: string[]; command?: string }>;
   modelMap: Map<string, PiModel>;
   currentModelId?: string;
   thinkingLevel?: string;
@@ -34,6 +34,9 @@ export interface SessionState {
   configOptions?: SessionConfigOption[];
   mcpServers?: unknown[];
   title?: string;
+  statusToolCallId?: string;
+  statusState?: "idle" | "running" | "cancelled" | "error";
+  statusDetail?: string | null;
 }
 
 export type SessionConfigResult = {
