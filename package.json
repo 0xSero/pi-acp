@@ -8,7 +8,8 @@
     "start": "node --import tsx src/index.ts",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc",
-    "test": "node --import tsx scripts/smoke.ts"
+    "test": "node --import tsx scripts/smoke.ts",
+    "setup:zed": "node --import tsx scripts/setup-zed.ts"
   },
   "keywords": [
     "acp",
