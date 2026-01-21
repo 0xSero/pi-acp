@@ -155,6 +155,39 @@ export class SessionStatsReporter {
     }
     return lines.join("\n");
   }
+
+  /**
+   * Get a short summary string for appending to agent response.
+   */
+  async getSummary(session: SessionState): Promise<string | null> {
+    let statsResponse: PiResponse;
+    try {
+      statsResponse = await session.pi.request({ type: "get_session_stats" }, PI_REQUEST_TIMEOUT_MS);
+    } catch {
+      return null;
+    }
+    if (!statsResponse.success) {
+      return null;
+    }
+    const data = statsResponse.data && typeof statsResponse.data === "object" ? (statsResponse.data as SessionStats) : {};
+    const model = session.currentModelId ? session.modelMap.get(session.currentModelId) : undefined;
+    return this.formatSummary(data, model?.contextWindow);
+  }
+
+  private formatSummary(data: SessionStats, contextWindow?: number): string {
+    const tokens = data.tokens ?? {};
+    const parts: string[] = [];
+    if (tokens.total !== undefined && contextWindow) {
+      const pct = ((tokens.total / contextWindow) * 100).toFixed(0);
+      parts.push(`Context: ${tokens.total.toLocaleString()}/${contextWindow.toLocaleString()} (${pct}%)`);
+    } else if (tokens.total !== undefined) {
+      parts.push(`Tokens: ${tokens.total.toLocaleString()}`);
+    }
+    if (typeof data.cost === "number") {
+      parts.push(`Cost: $${data.cost.toFixed(4)}`);
+    }
+    return parts.length > 0 ? parts.join(" | ") : "";
+  }
 }
 
 function formatCount(label: string, value?: number): string | null {

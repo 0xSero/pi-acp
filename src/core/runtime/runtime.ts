@@ -31,8 +31,10 @@ export class SessionRuntime {
     this.status = new SessionStatusReporter(this.emitUpdate);
   }
 
-  initSessionStatus(session: SessionState): void {
-    this.status.ensure(session);
+  // Status is lazily initialized on first update() call to prevent race conditions
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  initSessionStatus(_session: SessionState): void {
+    // No-op
   }
 
   beginPrompt(session: SessionState): void {
@@ -72,8 +74,7 @@ export class SessionRuntime {
         this.handleTurnEnd(session, event);
         break;
       case "agent_end":
-        this.resolvePendingPrompt(session, "end_turn");
-        this.status.update(session, { state: "idle", detail: "Agent finished" });
+        void this.handleAgentEnd(session);
         break;
       case "auto_compaction_start":
         this.status.update(session, { state: "running", detail: `Auto compaction (${event.reason})` });
@@ -195,12 +196,25 @@ export class SessionRuntime {
     }
   }
 
-  private handleTurnEnd(session: SessionState, event: Extract<PiEvent, { type: "turn_end" }>): void {
-    const stopReason = this.mapStopReason((event.message as { stopReason?: string } | undefined)?.stopReason);
-    if (session.pendingPrompt) {
-      this.resolvePendingPrompt(session, stopReason);
+  private async handleAgentEnd(session: SessionState): Promise<void> {
+    // Emit summary BEFORE resolving the prompt so it's part of the response
+    const summary = await this.stats.getSummary(session);
+    if (summary) {
+      this.emitText(session.id, "agent_message_chunk", `\n\n---\n${summary}`);
     }
-    this.status.update(session, { state: "idle", detail: `Turn finished (${stopReason})` });
+    // Now resolve the prompt
+    this.resolvePendingPrompt(session, "end_turn");
+    this.status.update(session, { state: "idle", detail: "Agent finished" });
+    // Report full stats
+    void this.stats.report(session);
+  }
+
+  private handleTurnEnd(session: SessionState, event: Extract<PiEvent, { type: "turn_end" }>): void {
+    // NOTE: Don't resolve pending prompt here - only agent_end should do that.
+    // turn_end fires when a turn completes, but agent may continue with more turns.
+    const stopReason = this.mapStopReason((event.message as { stopReason?: string } | undefined)?.stopReason);
+    // Keep status as "running" since agent may continue
+    this.status.update(session, { state: "running", detail: `Turn finished (${stopReason})` });
     void this.stats.report(session);
   }
 

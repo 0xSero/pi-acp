@@ -17,40 +17,43 @@ export class SessionStatusReporter {
     this.emitUpdate = emitUpdate;
   }
 
-  ensure(session: SessionState): void {
-    if (session.statusToolCallId) {
-      return;
-    }
-    session.statusToolCallId = `session_status:${session.id}`;
-    this.emitUpdate(session.id, {
-      sessionUpdate: "tool_call",
-      toolCallId: session.statusToolCallId,
-      title: "Session status",
-      kind: "other",
-      status: "completed",
-      content: this.buildContent({ state: "idle" }),
-    });
-    session.statusState = "idle";
-    session.statusDetail = null;
-  }
-
+  /**
+   * Update status. Emits tool_call on first call, tool_call_update on subsequent calls.
+   * This lazy initialization prevents "Tool call not found" race conditions.
+   */
   update(session: SessionState, update: StatusUpdate): void {
-    this.ensure(session);
-    if (!session.statusToolCallId) {
+    const isFirst = !session.statusToolCallId;
+    const toolCallId = session.statusToolCallId ?? `session_status:${session.id}`;
+
+    if (isFirst) {
+      session.statusToolCallId = toolCallId;
+    }
+
+    // Skip if state unchanged (except on first call)
+    if (!isFirst && session.statusState === update.state && session.statusDetail === (update.detail ?? null)) {
       return;
     }
-    if (session.statusState === update.state && session.statusDetail === (update.detail ?? null)) {
-      return;
-    }
+
     session.statusState = update.state;
     session.statusDetail = update.detail ?? null;
 
-    this.emitUpdate(session.id, {
-      sessionUpdate: "tool_call_update",
-      toolCallId: session.statusToolCallId,
-      status: this.mapStatus(update.state),
-      content: this.buildContent(update),
-    });
+    if (isFirst) {
+      this.emitUpdate(session.id, {
+        sessionUpdate: "tool_call",
+        toolCallId,
+        title: "Session status",
+        kind: "other",
+        status: this.mapStatus(update.state),
+        content: this.buildContent(update),
+      });
+    } else {
+      this.emitUpdate(session.id, {
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: this.mapStatus(update.state),
+        content: this.buildContent(update),
+      });
+    }
   }
 
   private mapStatus(state: SessionStatusState): ToolCallStatus {

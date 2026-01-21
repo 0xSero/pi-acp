@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import nodePath from "node:path";
 import { logWarn } from "../../logger";
 import type { SessionUpdate, ToolCallContent, ToolKind } from "@agentclientprotocol/sdk";
 import type { PiEvent } from "../../pi/types";
@@ -143,8 +144,11 @@ export class SessionToolHandler {
     if (!args || typeof args !== "object") {
       return undefined;
     }
-    const candidate = args as { path?: unknown; filePath?: unknown; file?: unknown };
-    const path = [candidate.path, candidate.filePath, candidate.file].find((value) => typeof value === "string");
+    const candidate = args as { path?: unknown; filePath?: unknown; file_path?: unknown; file?: unknown };
+    // Check file_path first (used by Edit tool), then others
+    const path = [candidate.file_path, candidate.filePath, candidate.path, candidate.file].find(
+      (value) => typeof value === "string"
+    );
     return typeof path === "string" ? path : undefined;
   }
 
@@ -153,15 +157,14 @@ export class SessionToolHandler {
     return path ? [path] : undefined;
   }
 
-  private async snapshotFile(session: SessionState, toolCallId: string, path: string): Promise<void> {
-    if (!path.startsWith("/")) {
-      return;
-    }
+  private async snapshotFile(session: SessionState, toolCallId: string, filePath: string): Promise<void> {
+    // Resolve relative paths against session.cwd
+    const absolutePath = filePath.startsWith("/") ? filePath : nodePath.resolve(session.cwd, filePath);
     try {
-      const oldText = await readFile(path, "utf8");
-      session.toolCallSnapshots.set(toolCallId, { path, oldText });
-    } catch (error) {
-      logWarn(`snapshot failed for ${path}: ${(error as Error).message}`);
+      const oldText = await readFile(absolutePath, "utf8");
+      session.toolCallSnapshots.set(toolCallId, { path: absolutePath, oldText });
+    } catch {
+      // File doesn't exist - skip (new file won't have a diff for "before")
     }
   }
 
