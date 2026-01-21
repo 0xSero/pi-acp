@@ -28,7 +28,7 @@ export class SessionRuntime {
     this.commands = new SessionCommandHandler(this.emitUpdate);
     this.tools = new SessionToolHandler(this.emitUpdate);
     this.stats = new SessionStatsReporter(this.emitUpdate);
-    this.status = new SessionStatusReporter(this.emitUpdate);
+    this.status = new SessionStatusReporter();
   }
 
   // Status is lazily initialized on first update() call to prevent race conditions

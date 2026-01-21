@@ -34,9 +34,6 @@ export interface SessionState {
   configOptions?: SessionConfigOption[];
   mcpServers?: unknown[];
   title?: string;
-  statusToolCallId?: string;
-  statusState?: "idle" | "running" | "cancelled" | "error";
-  statusDetail?: string | null;
 }
 
 export type SessionConfigResult = {
