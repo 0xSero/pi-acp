@@ -1,4 +1,4 @@
-import { logWarn } from "../../logger";
+import { logInfo, logWarn } from "../../logger";
 import { PiEvent, PiResponse } from "../../pi/types";
 import type { ContentBlock, SessionUpdate, StopReason } from "@agentclientprotocol/sdk";
 import type { SessionState } from "../session/types";
@@ -55,6 +55,7 @@ export class SessionRuntime {
     }
 
     const event = line as PiEvent;
+    logInfo(`pi event: ${event.type}`);
     switch (event.type) {
       case "message_update":
         this.handleMessageUpdate(session, event);

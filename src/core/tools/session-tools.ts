@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import nodePath from "node:path";
-import { logWarn } from "../../logger";
+import { logInfo, logWarn } from "../../logger";
 import type { SessionUpdate, ToolCallContent, ToolKind } from "@agentclientprotocol/sdk";
 import type { PiEvent } from "../../pi/types";
 import type { SessionState } from "../session/types";
@@ -20,6 +20,7 @@ export class SessionToolHandler {
   }
 
   async handleStart(session: SessionState, event: ToolStartEvent): Promise<void> {
+    logInfo(`tool_start: ${event.toolName} (${event.toolCallId})`);
     const inputSummary = this.formatToolInput(event.toolName, event.args);
     const locations = this.extractLocations(event.args);
     session.toolCallInputs.set(event.toolCallId, {
@@ -62,6 +63,7 @@ export class SessionToolHandler {
   }
 
   handleEnd(session: SessionState, event: ToolEndEvent): void {
+    logInfo(`tool_end: ${event.toolName} (${event.toolCallId}) isError=${event.isError}`);
     const storedInput = session.toolCallInputs.get(event.toolCallId);
     session.toolCallInputs.delete(event.toolCallId);
 
