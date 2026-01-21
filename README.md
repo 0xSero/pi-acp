@@ -15,8 +15,8 @@
 
 ```mermaid
 flowchart LR
-  client[ACP Client\n(IDE, UI)] <--> adapter[pi-acp adapter\nNDJSON stdin/stdout]
-  adapter --> pi[pi process\n--mode rpc]
+  client["ACP Client<br/>(IDE, UI)"] <--> adapter["pi-acp adapter<br/>NDJSON stdin/stdout"]
+  adapter --> pi["pi process<br/>--mode rpc"]
 ```
 
 ## Message Flow
